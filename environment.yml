@@ -1,0 +1,12 @@
+name: stylegan2_env
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - tensorflow-gpu==1.14
+  - python=3.6
+  - numpy
+  - requests==2.22.0
+  - pillow==6.2.1
+  - cudatoolkit-dev
+
