@@ -11,10 +11,12 @@ import dnnlib
 import dnnlib.tflib as tflib
 import re
 import sys
+import time
 
 import pretrained_networks
 
 #----------------------------------------------------------------------------
+
 
 def generate_images(network_pkl, seeds, truncation_psi):
     print('Loading networks from "%s"...' % network_pkl)
@@ -28,19 +30,23 @@ def generate_images(network_pkl, seeds, truncation_psi):
         Gs_kwargs.truncation_psi = truncation_psi
 
     for seed_idx, seed in enumerate(seeds):
-        print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
+        print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx+1, len(seeds)))
         rnd = np.random.RandomState(seed)
-        z = rnd.randn(1, *Gs.input_shape[1:]) # [minibatch, component]
-        tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
-        images = Gs.run(z, None, **Gs_kwargs) # [minibatch, height, width, channel]
+        z = rnd.randn(1, *Gs.input_shape[1:])  # [minibatch, component]
+        tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars})  # [height, width]
+        start = time.time()
+        images = Gs.run(z, None, **Gs_kwargs)  # [minibatch, height, width, channel]
+        print('Inference Time: {:.2f}s'.format(time.time() - start))
         PIL.Image.fromarray(images[0], 'RGB').save(dnnlib.make_run_dir_path('seed%04d.png' % seed))
 
 #----------------------------------------------------------------------------
 
+
 def style_mixing_example(network_pkl, row_seeds, col_seeds, truncation_psi, col_styles, minibatch_size=4):
+    print('col_styles: {}'.format(col_styles))
     print('Loading networks from "%s"...' % network_pkl)
     _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
-    w_avg = Gs.get_var('dlatent_avg') # [component]
+    w_avg = Gs.get_var('dlatent_avg')  # [component]
 
     Gs_syn_kwargs = dnnlib.EasyDict()
     Gs_syn_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
@@ -49,13 +55,13 @@ def style_mixing_example(network_pkl, row_seeds, col_seeds, truncation_psi, col_
 
     print('Generating W vectors...')
     all_seeds = list(set(row_seeds + col_seeds))
-    all_z = np.stack([np.random.RandomState(seed).randn(*Gs.input_shape[1:]) for seed in all_seeds]) # [minibatch, component]
-    all_w = Gs.components.mapping.run(all_z, None) # [minibatch, layer, component]
-    all_w = w_avg + (all_w - w_avg) * truncation_psi # [minibatch, layer, component]
-    w_dict = {seed: w for seed, w in zip(all_seeds, list(all_w))} # [layer, component]
+    all_z = np.stack([np.random.RandomState(seed).randn(*Gs.input_shape[1:]) for seed in all_seeds])  # [minibatch, component]
+    all_w = Gs.components.mapping.run(all_z, None)  # [minibatch, layer, component]
+    all_w = w_avg + (all_w - w_avg) * truncation_psi  # [minibatch, layer, component]
+    w_dict = {seed: w for seed, w in zip(all_seeds, list(all_w))}  # [layer, component]
 
     print('Generating images...')
-    all_images = Gs.components.synthesis.run(all_w, **Gs_syn_kwargs) # [minibatch, height, width, channel]
+    all_images = Gs.components.synthesis.run(all_w, **Gs_syn_kwargs)  # [minibatch, height, width, channel]
     image_dict = {(seed, seed): image for seed, image in zip(all_seeds, list(all_images))}
 
     print('Generating style-mixed images...')
@@ -87,6 +93,156 @@ def style_mixing_example(network_pkl, row_seeds, col_seeds, truncation_psi, col_
 
 #----------------------------------------------------------------------------
 
+
+def style_mixing_moving(network_pkl, row_seeds, col_seeds, truncation_psi, minibatch_size=4):
+    col_styles = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 15, 17]
+    print('col_styles: {}'.format(col_styles))
+    print('Loading networks from "%s"...' % network_pkl)
+    _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
+    w_avg = Gs.get_var('dlatent_avg')  # [component]
+
+    Gs_syn_kwargs = dnnlib.EasyDict()
+    Gs_syn_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+    Gs_syn_kwargs.randomize_noise = False
+    Gs_syn_kwargs.minibatch_size = minibatch_size
+
+    print('Generating W vectors...')
+    all_seeds = list(set(row_seeds + col_seeds))
+    all_z = np.stack([np.random.RandomState(seed).randn(*Gs.input_shape[1:]) for seed in all_seeds])  # [minibatch, component]
+    all_w = Gs.components.mapping.run(all_z, None)  # [minibatch, layer, component]
+    all_w = w_avg + (all_w - w_avg) * truncation_psi  # [minibatch, layer, component]
+    w_dict = {seed: w for seed, w in zip(all_seeds, list(all_w))}  # [layer, component]
+    image_dict = {}
+
+    print('Generating style-mixed images...')
+    for row_seed in row_seeds:
+        for col_seed in col_seeds:
+            w = w_dict[row_seed].copy()
+            for col_style in col_styles:
+                w[0:col_style+1] = w_dict[col_seed][0:col_style+1]
+                image = Gs.components.synthesis.run(w[np.newaxis], **Gs_syn_kwargs)[0]  # [height, width, channel]
+                image_dict[(row_seed, col_seed, col_style)] = image
+
+    print('Saving images...')
+    for (row_seed, col_seed, col_style), image in image_dict.items():
+        PIL.Image.fromarray(image, 'RGB').save(dnnlib.make_run_dir_path('%d-%d 0-%d.png' % (row_seed, col_seed, col_style)))
+
+#----------------------------------------------------------------------------
+
+
+def style_mixing_noise(network_pkl, row_seeds, col_seeds, col_styles, truncation_psi, randomize_noise, minibatch_size=4):
+    print('col_styles: {}'.format(col_styles))
+    print('Loading networks from "%s"...' % network_pkl)
+    _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
+    w_avg = Gs.get_var('dlatent_avg')  # [component]
+
+    Gs_syn_kwargs = dnnlib.EasyDict()
+    Gs_syn_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+    Gs_syn_kwargs.randomize_noise = randomize_noise
+    Gs_syn_kwargs.minibatch_size = minibatch_size
+
+    print('Generating W vectors...')
+    all_seeds = list(set(row_seeds + col_seeds))
+    all_z = np.stack([np.random.RandomState(seed).randn(*Gs.input_shape[1:]) for seed in all_seeds])  # [minibatch, component]
+    all_w = Gs.components.mapping.run(all_z, None)  # [minibatch, layer, component]
+    all_w = w_avg + (all_w - w_avg) * truncation_psi  # [minibatch, layer, component]
+    w_dict = {seed: w for seed, w in zip(all_seeds, list(all_w))}  # [layer, component]
+    image_dict = {}
+
+    print('Generating style-mixed images...')
+    for row_seed in row_seeds:
+        for col_seed in col_seeds:
+            w = w_dict[row_seed].copy()
+            w[col_styles] = w_dict[col_seed][col_styles]
+            for i_noise in range(10):
+                image = Gs.components.synthesis.run(w[np.newaxis], **Gs_syn_kwargs)[0]  # [height, width, channel]
+                image_dict[(row_seed, col_seed, i_noise)] = image
+
+    print('Saving images...')
+    for (row_seed, col_seed, i_noise), image in image_dict.items():
+        PIL.Image.fromarray(image, 'RGB').save(dnnlib.make_run_dir_path('%d-%d noise%d.png' % (row_seed, col_seed, i_noise)))
+
+#----------------------------------------------------------------------------
+
+
+def style_mixing_two(network_pkl, row_seeds, col_seeds, col_styles, truncation_psi, minibatch_size=4):
+    import time
+    print('col_styles: {}'.format(col_styles))
+    print('Loading networks from "%s"...' % network_pkl)
+    start = time.time()
+    _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
+    w_avg = Gs.get_var('dlatent_avg')  # [component]
+    print('Load network: {} s'.format(time.time()-start))
+
+    Gs_syn_kwargs = dnnlib.EasyDict()
+    Gs_syn_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+    Gs_syn_kwargs.randomize_noise = False
+    Gs_syn_kwargs.minibatch_size = minibatch_size
+
+    print('Generating W vectors...')
+    start = time.time()
+    all_seeds = list(set(row_seeds + col_seeds))
+    all_z = np.stack([np.random.RandomState(seed).randn(*Gs.input_shape[1:]) for seed in all_seeds])  # [minibatch, component]
+    all_w = Gs.components.mapping.run(all_z, None)  # [minibatch, layer, component]
+    all_w = w_avg + (all_w - w_avg) * truncation_psi  # [minibatch, layer, component]
+    w_dict = {seed: w for seed, w in zip(all_seeds, list(all_w))}  # [layer, component]
+    image_dict = {}
+    print('Generating W: {} s'.format(time.time()-start))
+
+    print('Generating style-mixed images...')
+    start = time.time()
+    for row_seed in row_seeds:
+        for col_seed in col_seeds:
+            w = w_dict[row_seed].copy()
+            w[col_styles] = w_dict[col_seed][col_styles]
+            image = Gs.components.synthesis.run(w[np.newaxis], **Gs_syn_kwargs)[0]  # [height, width, channel]
+            image_dict[(row_seed, col_seed)] = image
+    print('Generating an image: {} s'.format(time.time()-start))
+
+    print('Saving images...')
+    start = time.time()
+    for (row_seed, col_seed), image in image_dict.items():
+        PIL.Image.fromarray(image, 'RGB').save(dnnlib.make_run_dir_path('%d-%d %d-%d.png' % (row_seed, col_seeds[0], col_styles[0], col_styles[-1])))
+    print('Saving an image: {} s'.format(time.time()-start))
+
+#----------------------------------------------------------------------------
+
+
+def style_mixing_multiple(network_pkl, row_seeds, col_seeds, truncation_psi, minibatch_size=4):
+    col_styles = [[6, 7], [0, 3]]
+    print('col_styles: {}'.format(col_styles))
+    print('Loading networks from "%s"...' % network_pkl)
+    _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
+    w_avg = Gs.get_var('dlatent_avg')  # [component]
+
+    Gs_syn_kwargs = dnnlib.EasyDict()
+    Gs_syn_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+    Gs_syn_kwargs.randomize_noise = False
+    Gs_syn_kwargs.minibatch_size = minibatch_size
+
+    print('Generating W vectors...')
+    all_seeds = list(set(row_seeds + col_seeds))
+    all_z = np.stack([np.random.RandomState(seed).randn(*Gs.input_shape[1:]) for seed in all_seeds])  # [minibatch, component]
+    all_w = Gs.components.mapping.run(all_z, None)  # [minibatch, layer, component]
+    all_w = w_avg + (all_w - w_avg) * truncation_psi  # [minibatch, layer, component]
+    w_dict = {seed: w for seed, w in zip(all_seeds, list(all_w))}  # [layer, component]
+    image_dict = {}
+
+    print('Generating style-mixed images...')
+    for row_seed in row_seeds:
+        w = w_dict[row_seed].copy()
+        for col_style, col_seed in zip(col_styles, col_seeds):
+            w[col_style] = w_dict[col_seed][col_style]
+        image = Gs.components.synthesis.run(w[np.newaxis], **Gs_syn_kwargs)[0]  # [height, width, channel]
+        image_dict[(row_seed, col_seeds[0], col_seeds[1])] = image
+
+    print('Saving images...')
+    for (row_seed, col_seeds[0], col_seeds[1]), image in image_dict.items():
+        PIL.Image.fromarray(image, 'RGB').save(dnnlib.make_run_dir_path('%d-%d-%d.png' % (row_seed, col_seeds[0], col_seeds[1])))
+
+#----------------------------------------------------------------------------
+
+
 def _parse_num_range(s):
     '''Accept either a comma separated list of numbers 'a,b,c' or a range 'a-c' and return as a list of ints.'''
 
@@ -98,6 +254,7 @@ def _parse_num_range(s):
     return [int(x) for x in vals]
 
 #----------------------------------------------------------------------------
+
 
 _examples = '''examples:
 
@@ -115,6 +272,7 @@ _examples = '''examples:
 '''
 
 #----------------------------------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -141,6 +299,37 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
     parser_style_mixing_example.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
     parser_style_mixing_example.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
 
+    parser_style_mixing_moving = subparsers.add_parser('style-mixing-moving', help='Generate gradual change')
+    parser_style_mixing_moving.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
+    parser_style_mixing_moving.add_argument('--row-seeds', type=_parse_num_range, help='Random seeds to use for image rows', required=True)
+    parser_style_mixing_moving.add_argument('--col-seeds', type=_parse_num_range, help='Random seeds to use for image columns', required=True)
+    parser_style_mixing_moving.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
+    parser_style_mixing_moving.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
+
+    parser_style_mixing_noise = subparsers.add_parser('style-mixing-noise', help='Pose noises')
+    parser_style_mixing_noise.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
+    parser_style_mixing_noise.add_argument('--row-seeds', type=_parse_num_range, help='Random seeds to use for image rows', required=True)
+    parser_style_mixing_noise.add_argument('--col-seeds', type=_parse_num_range, help='Random seeds to use for image columns', required=True)
+    parser_style_mixing_noise.add_argument('--col-styles', type=_parse_num_range, help='Style layer range (default: %(default)s)', default='0-6')
+    parser_style_mixing_noise.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
+    parser_style_mixing_noise.add_argument('--randomize-noise', type=bool, help='Randomize noise (default: %(default)s)', default=False)
+    parser_style_mixing_noise.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
+
+    parser_style_mixing_two = subparsers.add_parser('style-mixing-two', help='Generate from two references')
+    parser_style_mixing_two.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
+    parser_style_mixing_two.add_argument('--row-seeds', type=_parse_num_range, help='Random seeds to use for image rows', required=True)
+    parser_style_mixing_two.add_argument('--col-seeds', type=_parse_num_range, help='Random seeds to use for image columns', required=True)
+    parser_style_mixing_two.add_argument('--col-styles', type=_parse_num_range, help='Style layer range (default: %(default)s)', default='0-6')
+    parser_style_mixing_two.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
+    parser_style_mixing_two.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
+
+    parser_style_mixing_multiple = subparsers.add_parser('style-mixing-multiple', help='Generate from multiple references')
+    parser_style_mixing_multiple.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
+    parser_style_mixing_multiple.add_argument('--row-seeds', type=_parse_num_range, help='Random seeds to use for image rows', required=True)
+    parser_style_mixing_multiple.add_argument('--col-seeds', type=_parse_num_range, help='Random seeds to use for image columns', required=True)
+    parser_style_mixing_multiple.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
+    parser_style_mixing_multiple.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
+
     args = parser.parse_args()
     kwargs = vars(args)
     subcmd = kwargs.pop('command')
@@ -158,11 +347,16 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
 
     func_name_map = {
         'generate-images': 'run_generator.generate_images',
-        'style-mixing-example': 'run_generator.style_mixing_example'
+        'style-mixing-example': 'run_generator.style_mixing_example',
+        'style-mixing-moving': 'run_generator.style_mixing_moving',
+        'style-mixing-noise': 'run_generator.style_mixing_noise',
+        'style-mixing-two': 'run_generator.style_mixing_two',
+        'style-mixing-multiple': 'run_generator.style_mixing_multiple'
     }
     dnnlib.submit_run(sc, func_name_map[subcmd], **kwargs)
 
 #----------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
     main()
