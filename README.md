@@ -27,11 +27,11 @@ Download [stylegan2-ffhq-config-f.pkl](http://d36zk2xti64re0.cloudfront.net/styl
 
 ### Troubleshooting
 
-1. If it throws the error when running one of the following script:
+1. If it throws the following error when running scripts in [Usage](https://github.com/Zhengro/stylegan2#usage):
 
-`tensorflow.python.framework.errors_impl.NotFoundError: /stylegan2/dnnlib/tflib/_cudacache/fused_bias_act_17c8f8342cd479bd10932d2c3c12c42c.so: undefined symbol: _ZN10tensorflow12OpDefBuilder6OutputESs`
+   `tensorflow.python.framework.errors_impl.NotFoundError: /stylegan2/dnnlib/tflib/_cudacache/fused_bias_act_17c8f8342cd479bd10932d2c3c12c42c.so: undefined symbol:    _ZN10tensorflow12OpDefBuilder6OutputESs`
 
-Open [custom_ops.py](https://github.com/Zhengro/stylegan2/blob/master/dnnlib/tflib/custom_ops.py), find "--compiler-options \'-fPIC -D_GLIBCXX_USE_CXX11_ABI=0" and change it to "--compiler-options \'-fPIC -D_GLIBCXX_USE_CXX11_ABI=1"
+   Open [custom_ops.py](https://github.com/Zhengro/stylegan2/blob/master/dnnlib/tflib/custom_ops.py), find "--compiler-options \'-fPIC -D_GLIBCXX_USE_CXX11_ABI=0" and change it to "--compiler-options \'-fPIC -D_GLIBCXX_USE_CXX11_ABI=1"
 
 2. It is a common problem that the first inference on Tensorflow is very slow, which means the time used to generate the first image is much longer than the sequential ones (See [Example of image generation](https://github.com/Zhengro/stylegan2#usage)). To handle this (when integrating stylegan2 into the GUI), we can deliberately generate a dummy image during the initialization phase (right after loading the model) as a warm-up.
 
@@ -58,12 +58,4 @@ python run_generator.py style-mixing-multiple --network=stylegan2-ffhq-config-f.
 
 ## References
 
-```
-@article{Karras2019stylegan2,
-  title   = {Analyzing and Improving the Image Quality of {StyleGAN}},
-  author  = {Tero Karras and Samuli Laine and Miika Aittala and Janne Hellsten and Jaakko Lehtinen and Timo Aila},
-  journal = {CoRR},
-  volume  = {abs/1912.04958},
-  year    = {2019},
-}
-```
+* [Analyzing and Improving the Image Quality of StyleGAN](https://openaccess.thecvf.com/content_CVPR_2020/papers/Karras_Analyzing_and_Improving_the_Image_Quality_of_StyleGAN_CVPR_2020_paper.pdf)
