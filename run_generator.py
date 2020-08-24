@@ -42,6 +42,36 @@ def generate_images(network_pkl, seeds, truncation_psi):
 #----------------------------------------------------------------------------
 
 
+def generate_ws(network_pkl, seeds, truncation_psi):
+    print('Loading networks from "%s"...' % network_pkl)
+    _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
+    noise_vars = [var for name, var in Gs.components.synthesis.vars.items() if name.startswith('noise')]
+    w_avg = Gs.get_var('dlatent_avg')  # [component]
+
+    Gs_kwargs = dnnlib.EasyDict()
+    Gs_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+    Gs_kwargs.randomize_noise = False
+    if truncation_psi is not None:
+        Gs_kwargs.truncation_psi = truncation_psi
+
+    Ws = np.zeros((len(seeds), 18, 512))
+
+    for seed_idx, seed in enumerate(seeds):
+        print('Generating W for seed %d (%d/%d) ...' % (seed, seed_idx+1, len(seeds)))
+        rnd = np.random.RandomState(seed)
+        z = rnd.randn(1, *Gs.input_shape[1:])  # [1, component]
+        tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars})  # [height, width]
+        start = time.time()
+        w = Gs.components.mapping.run(z, None)  # [1, layer, component]
+        w = w_avg + (w - w_avg) * truncation_psi  # [1, layer, component]
+        print('Time: {}s'.format(time.time() - start))
+        Ws[seed_idx, :, :] = w
+
+    np.save('W_{}.npy'.format(len(seeds)), Ws)
+
+#----------------------------------------------------------------------------
+
+
 def style_mixing_example(network_pkl, row_seeds, col_seeds, truncation_psi, col_styles, minibatch_size=4):
     print('col_styles: {}'.format(col_styles))
     print('Loading networks from "%s"...' % network_pkl)
@@ -251,6 +281,12 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
     parser_generate_images.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
     parser_generate_images.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
 
+    parser_generate_ws = subparsers.add_parser('generate-ws', help='Generate Ws')
+    parser_generate_ws.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
+    parser_generate_ws.add_argument('--seeds', type=_parse_num_range, help='List of random seeds', required=True)
+    parser_generate_ws.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
+    parser_generate_ws.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
+
     parser_style_mixing_example = subparsers.add_parser('style-mixing-example', help='Generate style mixing')
     parser_style_mixing_example.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
     parser_style_mixing_example.add_argument('--row-seeds', type=_parse_num_range, help='Random seeds to use for image rows', required=True)
@@ -299,6 +335,7 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
 
     func_name_map = {
         'generate-images': 'run_generator.generate_images',
+        'generate-ws': 'run_generator.generate_ws',
         'style-mixing-example': 'run_generator.style_mixing_example',
         'style-mixing-gradual-change': 'run_generator.style_mixing_gradual_change',
         'style-mixing-noise': 'run_generator.style_mixing_noise',
